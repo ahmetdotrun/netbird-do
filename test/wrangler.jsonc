@@ -1,0 +1,12 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "netbird-do-test",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  "durable_objects": { "bindings": [{ "name": "NETBIRD", "class_name": "Peer" }, { "name": "RAW", "class_name": "RawPeer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Peer", "RawPeer"] }],
+  "observability": { "enabled": false }
+}

@@ -1,0 +1,150 @@
+diff --git a/client/embed/embed.go b/client/embed/embed.go
+index 5905c1c..e35e862 100644
+--- a/client/embed/embed.go
++++ b/client/embed/embed.go
+@@ -85,6 +85,8 @@ type Options struct {
+ 	StatePath string
+ 	// DisableClientRoutes disables the client routes
+ 	DisableClientRoutes bool
++	// EnableServerRoutes allows this embedded client to act as a routing peer.
++	EnableServerRoutes bool
+ 	// DisableIPv6 disables IPv6 overlay addressing
+ 	DisableIPv6 bool
+ 	// BlockInbound blocks all inbound connections from peers
+@@ -210,13 +212,13 @@ func New(opts Options) (*Client, error) {
+ 		return nil, fmt.Errorf("invalid dns labels: %w", err)
+ 	}
+ 
+-	t := true
++	disableServerRoutes := !opts.EnableServerRoutes
+ 	var config *profilemanager.Config
+ 	input := profilemanager.ConfigInput{
+ 		ConfigPath:          opts.ConfigPath,
+ 		ManagementURL:       opts.ManagementURL,
+ 		PreSharedKey:        &opts.PreSharedKey,
+-		DisableServerRoutes: &t,
++		DisableServerRoutes: &disableServerRoutes,
+ 		DisableClientRoutes: &opts.DisableClientRoutes,
+ 		DisableIPv6:         &opts.DisableIPv6,
+ 		BlockInbound:        &opts.BlockInbound,
+diff --git a/client/firewall/uspfilter/forwarder/host.go b/client/firewall/uspfilter/forwarder/host.go
+new file mode 100644
+index 0000000..c1624df
+--- /dev/null
++++ b/client/firewall/uspfilter/forwarder/host.go
+@@ -0,0 +1,30 @@
++package forwarder
++
++import (
++	"context"
++	"net"
++	"sync/atomic"
++)
++
++type hostDialer struct {
++	dial func(context.Context, string, string) (net.Conn, error)
++}
++
++var sandboxDialer atomic.Pointer[hostDialer]
++
++// SetHostDialContext supplies host egress for socketless sandbox environments.
++// A nil dialer restores normal operating-system sockets. Configure before use.
++func SetHostDialContext(dial func(context.Context, string, string) (net.Conn, error)) {
++	if dial == nil {
++		sandboxDialer.Store(nil)
++		return
++	}
++	sandboxDialer.Store(&hostDialer{dial: dial})
++}
++
++func dialHostContext(ctx context.Context, network, address string) (net.Conn, error) {
++	if host := sandboxDialer.Load(); host != nil {
++		return host.dial(ctx, network, address)
++	}
++	return (&net.Dialer{}).DialContext(ctx, network, address)
++}
+diff --git a/client/firewall/uspfilter/forwarder/tcp.go b/client/firewall/uspfilter/forwarder/tcp.go
+index e586f18..cb2e4e0 100644
+--- a/client/firewall/uspfilter/forwarder/tcp.go
++++ b/client/firewall/uspfilter/forwarder/tcp.go
+@@ -45,7 +45,7 @@ func (f *Forwarder) handleTCP(r *tcp.ForwarderRequest) {
+ 
+ 	dialAddr := net.JoinHostPort(dialIP.String(), strconv.Itoa(int(id.LocalPort)))
+ 
+-	outConn, err := (&net.Dialer{}).DialContext(f.ctx, "tcp", dialAddr)
++	outConn, err := dialHostContext(f.ctx, "tcp", dialAddr)
+ 	if err != nil {
+ 		r.Complete(true)
+ 		if f.logger.Enabled(nblog.LevelTrace) {
+diff --git a/client/firewall/uspfilter/forwarder/udp.go b/client/firewall/uspfilter/forwarder/udp.go
+index 3a65e74..f5ac267 100644
+--- a/client/firewall/uspfilter/forwarder/udp.go
++++ b/client/firewall/uspfilter/forwarder/udp.go
+@@ -163,7 +163,7 @@ func (f *Forwarder) handleUDP(r *udp.ForwarderRequest) bool {
+ 	}()
+ 
+ 	dstAddr := net.JoinHostPort(f.determineDialAddr(id.LocalAddress).String(), strconv.Itoa(int(id.LocalPort)))
+-	outConn, err := (&net.Dialer{}).DialContext(f.ctx, "udp", dstAddr)
++	outConn, err := dialHostContext(f.ctx, "udp", dstAddr)
+ 	if err != nil {
+ 		f.logger.Debug2("forwarder: UDP dial error for %v: %v", epID(id), err)
+ 		// Connecting the socket is the route lookup. Like TCP, a destination the host can't look up
+diff --git a/client/system/info_js.go b/client/system/info_js.go
+index 3323fb5..c42a608 100644
+--- a/client/system/info_js.go
++++ b/client/system/info_js.go
+@@ -2,6 +2,7 @@ package system
+ 
+ import (
+ 	"context"
++	"os"
+ 	"runtime"
+ 	"strings"
+ 	"syscall/js"
+@@ -30,6 +31,13 @@ func GetInfo(ctx context.Context) *Info {
+ 	collectBrowserInfo(info)
+ 	collectLocationInfo(info)
+ 	collectSystemInfo(info)
++	// Distinguish server-side WASM hosts from browser-only temporary peers.
++	switch os.Getenv("NB_WASM_HOST") {
++	case "cloudflare":
++		info.OS, info.Kernel, info.KernelVersion, info.Platform = "Cloudflare Workers", "workerd", "workerd/wasm", "Cloudflare Durable Objects"
++	case "node":
++		info.OS, info.Kernel, info.KernelVersion, info.Platform = "Node.js", "node", "nodejs/wasm", "Node.js"
++	}
+ 
+ 	// A caller-provided device name wins, as on the other platforms. A peer
+ 	// registered over an API keeps reporting the name it was registered with,
+diff --git a/shared/relay/client/dialer/ws/ws.go b/shared/relay/client/dialer/ws/ws.go
+index 946d267..154a62a 100644
+--- a/shared/relay/client/dialer/ws/ws.go
++++ b/shared/relay/client/dialer/ws/ws.go
+@@ -9,6 +9,7 @@ import (
+ 	"net"
+ 	"net/http"
+ 	"net/url"
++	"runtime"
+ 
+ 	"github.com/coder/websocket"
+ 	log "github.com/sirupsen/logrus"
+@@ -30,6 +31,20 @@ func (d Dialer) Dial(ctx context.Context, address, serverName string) (net.Conn,
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	// The browser WebSocket API cannot override TLS SNI or the Host header.
++	// Keep the verified DNS name when the native dial path supplies an IP.
++	if runtime.GOOS == "js" && serverName != "" {
++		u, err := url.Parse(wsURL)
++		if err != nil {
++			return nil, err
++		}
++		if port := u.Port(); port != "" {
++			u.Host = net.JoinHostPort(serverName, port)
++		} else {
++			u.Host = serverName
++		}
++		wsURL = u.String()
++	}
+ 
+ 	host, err := requestHost(wsURL, serverName)
+ 	if err != nil {

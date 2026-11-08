@@ -1,0 +1,15 @@
+diff --git a/ws_js.go b/ws_js.go
+index 026b75f..d3ab084 100644
+--- a/ws_js.go
++++ b/ws_js.go
+@@ -102,7 +102,9 @@ func (c *Conn) init() {
+ 
+ 	c.releaseOnError = c.ws.OnError(func(v js.Value) {
+ 		c.setCloseErr(errors.New(v.Get("message").String()))
+-		c.closeWithInternal()
++		// The close event needs the JS event loop. Never wait for its
++		// handshake inside the error callback that must first return.
++		go c.closeWithInternal()
+ 	})
+ 
+ 	c.releaseOnMessage = c.ws.OnMessage(func(e wsjs.MessageEvent) {

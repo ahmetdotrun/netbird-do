@@ -1,0 +1,20 @@
+{
+  "name": "netbird-do",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A NetBird peer inside a Cloudflare Durable Object",
+  "main": "./src/index.js",
+  "exports": { ".": "./src/index.js" },
+  "files": ["src/index.js", "src/runtime-host.js", "src/session.js", "src/policy.js", "src/wasm_exec.js", "src/netbird.wasm", "src/THIRD_PARTY_NOTICES.txt"],
+  "repository": { "type": "git", "url": "git+https://github.com/ahmetdotrun/netbird-do.git" },
+  "homepage": "https://github.com/ahmetdotrun/netbird-do#readme",
+  "workspaces": ["examples/exit-node"],
+  "scripts": {
+    "build": "sh scripts/build.sh && npm run bundle",
+    "bundle": "cd examples/exit-node && wrangler deploy --dry-run --outdir ../../dist/example",
+    "test": "sh scripts/build.sh --tests && node --test test/*.test.js",
+    "test:runtime": "npm run bundle && (cd test && wrangler deploy --dry-run --outdir ../dist/test) && node --test test/runtime/*.test.js"
+  },
+  "engines": { "node": ">=22" },
+  "devDependencies": { "wrangler": "4.158.0", "miniflare": "5.20261104.0-beta" }
+}

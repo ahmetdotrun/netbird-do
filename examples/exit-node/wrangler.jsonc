@@ -1,0 +1,16 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "netbird-exit",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  "durable_objects": {
+    "bindings": [{ "name": "NETBIRD", "class_name": "ExitNode" }],
+    "code_update_strategy": { "mode": "immediate" }
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ExitNode"] }],
+  "observability": { "enabled": false },
+  "vars": { "NB_HOSTNAME": "cf-netbird", "NB_LOCATION_HINT": "weur" }
+}
